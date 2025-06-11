@@ -81,6 +81,16 @@ class GoogleSheetManager:
         sheet = self.client.open_by_key(self.spreadsheet_id).worksheet(sheet_name)
         sheet.update(range_name=cell, values=[[value]], value_input_option='RAW')
 
+
+    def get_unique_shops(self, sheet_name, shop_column="shop"):
+        sheet = self.client.open_by_key(self.spreadsheet_id).worksheet(sheet_name)
+        data = sheet.get_all_values()
+        if not data or shop_column not in data[0]:
+            return []
+        col_idx = data[0].index(shop_column)
+        shops = [row[col_idx] for row in data[1:] if len(row) > col_idx and row[col_idx]]
+        return list(set(shops))
+
 class TelegramNotifier:
     def __init__(self, bot_token, chat_id):
         self.bot_token = bot_token
@@ -100,13 +110,12 @@ class ShopListManager:
                 shop_names.add(row['shop'])
         return list(shop_names)
 
+
     @staticmethod
     def compare_shop_lists(today_list, yesterday_list):
         new_shops = list(set(today_list) - set(yesterday_list))
         print(f"New shops since yesterday: {new_shops}")
         return new_shops
-
-
 
 
 def clean_files(file_list):
@@ -120,8 +129,8 @@ def clean_files(file_list):
 def main():
     load_dotenv()
 
-    shop_list_from_yesterday = ShopListManager.get_shop_names("nowe_sklepy.csv")
-    clean_files(["kolejki.csv", "nowe_sklepy.csv"])
+    
+    clean_files(["kolejki.csv", "nowe_sklepy.csv", "atrybuty.csv", "mote_bez_typu.csv"])
 
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -146,11 +155,14 @@ def main():
 
     # Nowe sklepy
     print("Pobieranie nowych sklepow")
+
+    shop_list_from_yesterday = sheet_manager.get_unique_shops("Nowe sklepy", "shop")
     mysql_downloader.download_to_csv("Connector/sql/nowe_sklepy.sql", "nowe_sklepy.csv")
     while not os.path.exists("nowe_sklepy.csv"):
         print("Waiting for nowe_sklepy.csv to be created...")
         time.sleep(1)
     sheet_manager.clear_and_append_csv("nowe_sklepy.csv", "Nowe sklepy")
+    shop_list_from_today = ShopListManager.get_shop_names("nowe_sklepy.csv")
 
     # Uzupełnienie atrybutów
     print("Pobieranie uzupełnienia atrybutów")
@@ -160,19 +172,25 @@ def main():
         time.sleep(1)
     sheet_manager.clear_and_append_csv("atrybuty.csv", "Atrybuty")
 
-    shop_list_from_today = ShopListManager.get_shop_names("nowe_sklepy.csv")
-
-
     new_shops = ShopListManager.compare_shop_lists(shop_list_from_today, shop_list_from_yesterday)
-
 
     # Update timestamp
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     sheet_manager.write_cell("Ogólne", "A1", f"Updated at {timestamp}")
     print("Pobieranie zakonczone")
 
+    spreadsheet_id = os.getenv("MOTE_SPREADSHEET_ID")
+    sheet_manager = GoogleSheetManager(spreadsheet_id, creds_json_path)
+    # Uzupełnienie mote bez typu
+    print("Pobieranie uzupełnienia mote bez typu...")
+    mysql_downloader.download_to_csv("Connector/sql/mote_bez_typu.sql", "mote_bez_typu.csv")
+    while not os.path.exists("mote_bez_typu.csv"):
+        print("Waiting for mote_bez_typu.csv to be created...")
+        time.sleep(1)
+    sheet_manager.clear_and_append_csv("mote_bez_typu.csv", "RAW")
+
     # Telegram notification
-    info = f"🔄️Dane odświeżone o {timestamp}\n\nNowe sklepy: {new_shops}\n\nRandomowy fakt: {get_fact(filter_enabled=True)}"
+    info = f"🔄️Dane odświeżone o {timestamp}\n\nNowe sklepy w porównaniu do poprzedniego odświeżenia danych: {new_shops}\n\nRandomowy fakt: {get_fact(filter_enabled=True)}"
     asyncio.run(notifier.send_message(info))
 
 if __name__ == "__main__":
